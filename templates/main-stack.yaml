@@ -134,25 +134,9 @@ Resources:
                 Action: secretsmanager:GetSecretValue
                 Resource: !Ref WebhookCredentials
 
-  # --- IAM: DevOps Agent Role ---
-  DevOpsAgentBackupRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: DevOpsAgentBackupRole
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: aidevops.amazonaws.com
-            Action: sts:AssumeRole
-            Condition:
-              StringEquals:
-                aws:SourceAccount: !Ref AWS::AccountId
-              ArnEquals:
-                aws:SourceArn: !Sub arn:aws:aidevops:${AWS::Region}:${AWS::AccountId}:agentspace/${AgentSpaceId}
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AIDevOpsAgentAccessPolicy
+  # --- IAM: DevOps Agent Role (created by deploy.sh, referenced here) ---
+  # Note: DevOpsAgentBackupRole is created in deploy.sh Step 2 before
+  # CloudFormation runs, because associate-service needs it to exist first.
 
   # --- Secrets Manager ---
   WebhookCredentials:
@@ -165,7 +149,7 @@ Outputs:
   LambdaArn:
     Value: !GetAtt BackupFailureBridge.Arn
   AgentRoleArn:
-    Value: !GetAtt DevOpsAgentBackupRole.Arn
+    Value: !Sub arn:aws:iam::${AWS::AccountId}:role/DevOpsAgentBackupRole
   EventBusArn:
     Value: !Sub arn:aws:events:${AWS::Region}:${AWS::AccountId}:event-bus/default
     Description: Member accounts forward events to this bus
