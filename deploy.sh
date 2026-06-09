@@ -34,30 +34,33 @@ echo "  OU:       $OU_ID"
 echo ""
 
 # ═══════════════════════════════════════════════════════════════════
-# STEP 1: Create DevOps Agent Space & Associate AWS Account
+# STEP 1: Create or Reuse DevOps Agent Space
 # ═══════════════════════════════════════════════════════════════════
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "[1/5] Creating DevOps Agent Space..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 SPACE_NAME="BackupInvestigations"
-echo "  → Creating Agent Space: $SPACE_NAME"
 
-AGENT_SPACE_ID=$(aws devops-agent create-agent-space \
-  --name "$SPACE_NAME" \
-  --description "Automated backup failure investigation" \
+# Check if space already exists
+AGENT_SPACE_ID=$(aws devops-agent list-agent-spaces \
   --region "$REGION" \
-  --query 'agentSpace.agentSpaceId' --output text 2>/dev/null) || {
-    echo "  ⚠ Space may already exist, looking up..."
-    AGENT_SPACE_ID=$(aws devops-agent list-agent-spaces \
-      --region "$REGION" \
-      --query "agentSpaces[?name=='$SPACE_NAME'].agentSpaceId | [0]" --output text)
-}
+  --query "agentSpaces[?name=='$SPACE_NAME'].agentSpaceId | [0]" --output text 2>/dev/null)
+
+if [ -z "$AGENT_SPACE_ID" ] || [ "$AGENT_SPACE_ID" = "None" ]; then
+  echo "  → Creating Agent Space: $SPACE_NAME"
+  AGENT_SPACE_ID=$(aws devops-agent create-agent-space \
+    --name "$SPACE_NAME" \
+    --description "Automated backup failure investigation" \
+    --region "$REGION" \
+    --query 'agentSpace.agentSpaceId' --output text)
+else
+  echo "  → Agent Space already exists, reusing"
+fi
 
 if [ -z "$AGENT_SPACE_ID" ] || [ "$AGENT_SPACE_ID" = "None" ]; then
   echo "  ✗ Could not create or find Agent Space."
-  echo "    Please create it manually in the DevOps Agent console and provide the ID:"
-  read -p "    Agent Space ID: " AGENT_SPACE_ID
+  read -p "    Enter Agent Space ID manually: " AGENT_SPACE_ID
 fi
 echo "  ✓ Agent Space ID: $AGENT_SPACE_ID"
 echo ""
@@ -69,7 +72,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo "[2/5] Creating IAM role & associating AWS account..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# Create trust policy for DevOps Agent
+# Create trust policy
 cat > /tmp/devops-agent-trust-policy.json << EOF
 {
   "Version": "2012-10-17",
@@ -93,11 +96,18 @@ cat > /tmp/devops-agent-trust-policy.json << EOF
 }
 EOF
 
-# Create role (or skip if exists)
-aws iam create-role \
-  --role-name DevOpsAgentBackupRole \
-  --assume-role-policy-document file:///tmp/devops-agent-trust-policy.json \
-  >/dev/null 2>&1 && echo "  ✓ IAM role created" || echo "  ✓ IAM role already exists"
+# Create role if not exists, update trust policy if it does
+if aws iam get-role --role-name DevOpsAgentBackupRole >/dev/null 2>&1; then
+  echo "  ✓ IAM role exists, updating trust policy"
+  aws iam update-assume-role-policy \
+    --role-name DevOpsAgentBackupRole \
+    --policy-document file:///tmp/devops-agent-trust-policy.json
+else
+  echo "  → Creating IAM role: DevOpsAgentBackupRole"
+  aws iam create-role \
+    --role-name DevOpsAgentBackupRole \
+    --assume-role-policy-document file:///tmp/devops-agent-trust-policy.json >/dev/null
+fi
 
 aws iam attach-role-policy \
   --role-name DevOpsAgentBackupRole \
@@ -138,6 +148,28 @@ if [ -z "$WEBHOOK_URL" ] || [ -z "$WEBHOOK_SECRET" ]; then
 fi
 echo "  ✓ Webhook configured"
 echo ""
+
+# Clean up any previous failed stack
+STACK_STATUS=$(aws cloudformation describe-stacks \
+  --stack-name "$STACK_NAME" \
+  --region "$REGION" \
+  --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo "DOES_NOT_EXIST")
+
+if [[ "$STACK_STATUS" == *"ROLLBACK"* ]] || [[ "$STACK_STATUS" == *"FAILED"* ]]; then
+  echo "  → Cleaning up previous failed stack..."
+  aws cloudformation delete-stack --stack-name "$STACK_NAME" --region "$REGION"
+  aws cloudformation wait stack-delete-complete --stack-name "$STACK_NAME" --region "$REGION"
+  echo "  ✓ Old stack removed"
+fi
+
+# Delete secret if in pending-deletion state (from a previous failed deploy)
+aws secretsmanager delete-secret \
+  --secret-id "devops-agent/backup-webhook" \
+  --force-delete-without-recovery \
+  --region "$REGION" 2>/dev/null || true
+
+# Brief wait for secret deletion to propagate
+sleep 2
 
 echo "  → Deploying main CloudFormation stack..."
 aws cloudformation deploy \
