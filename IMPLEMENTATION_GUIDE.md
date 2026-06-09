@@ -90,7 +90,7 @@ The script asks for **3 inputs** plus webhook credentials — everything else is
 
 > **Tip:** Use `r-xxxx` (root ID) to cover all accounts in the organization.
 
-> **Webhook Setup:** During Step 3/5, the script pauses and asks for webhook credentials. Open the DevOps Agent console, select your Agent Space, go to Capabilities → Webhook → Generate webhook (HMAC type), then copy the URL and secret back into the terminal.
+> **Webhook Setup:** During Step 3/5, the script pauses and asks for webhook credentials. Open the DevOps Agent console, go to Agent Spaces → select your space → Configure Agent Space Webhook → Generate webhook (HMAC type), then copy the URL and secret back into the terminal.
 
 ### Step 2.3: Automated Steps
 
