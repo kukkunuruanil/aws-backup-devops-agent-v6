@@ -12,10 +12,14 @@ Parameters:
     Type: String
     Description: Event bus ARN of the delegated admin account
 
+Conditions:
+  IsNotDelegatedAdmin: !Not [!Equals [!Ref "AWS::AccountId", !Ref DelegatedAdminAccountId]]
+
 Resources:
   # --- EventBridge: Forward failed backup events to delegated admin ---
   ForwardingRule:
     Type: AWS::Events::Rule
+    Condition: IsNotDelegatedAdmin
     Properties:
       Name: ForwardBackupFailures-ToCentral
       Description: Forwards failed backup/copy events to delegated admin for investigation
@@ -36,6 +40,7 @@ Resources:
 
   ForwardingRole:
     Type: AWS::IAM::Role
+    Condition: IsNotDelegatedAdmin
     Properties:
       RoleName: BackupEventForwardingRole
       AssumeRolePolicyDocument:
