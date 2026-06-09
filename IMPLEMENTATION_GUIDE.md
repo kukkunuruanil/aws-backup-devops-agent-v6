@@ -72,7 +72,7 @@ aws organizations register-delegated-administrator \
 
 ```bash
 git clone https://github.com/kukkunuruanil/aws-backup-devops-agent-v6.git
-cd aws-backup-devops-agent
+cd aws-backup-devops-agent-v6
 ./deploy.sh
 ```
 
