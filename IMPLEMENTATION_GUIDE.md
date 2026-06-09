@@ -213,18 +213,26 @@ aws backup start-copy-job \
 
 ### Delegated Admin Account
 
+### Global Resources (created once)
+
 | Resource | Type | Purpose |
 |----------|------|---------|
 | `BackupInvestigations` | Agent Space | Receives webhook events |
 | HMAC Webhook | Webhook | Authenticated event intake |
+| `DevOpsAgentBackupRole` | IAM Role | Agent investigation access (global) |
+| Slack association | Integration | Delivers findings to your channel |
+
+### Per-Region Resources (delegated admin)
+
+| Resource | Type | Purpose |
+|----------|------|---------|
 | `BackupFailureBridge` | Lambda | Transforms events → webhook POST |
 | `BackupFailures-TriggerInvestigation` | EventBridge Rule | Catches FAILED events |
 | EventBus Policy | EventBridge | Allows org accounts to send events |
-| `DevOpsAgentBackupRole` | IAM Role | Agent investigation access |
-| `BackupFailureBridgeRole` | IAM Role | Lambda execution |
+| Lambda execution role | IAM Role | Auto-generated per region |
 | `devops-agent/backup-webhook` | Secret | Webhook URL + HMAC key |
 
-### Member Accounts (via StackSet, auto-deployed)
+### Per-Region Resources (member accounts, via StackSet)
 
 | Resource | Type | Purpose |
 |----------|------|---------|
@@ -232,16 +240,63 @@ aws backup start-copy-job \
 | `BackupEventForwardingRole` | IAM Role | Allows EventBridge cross-account PutEvents |
 | `DevOpsAgentInvestigationRole` | IAM Role | Allows Agent to investigate in this account |
 
+> **Note:** The delegated admin account receives the StackSet but skips the forwarding rule (cannot forward to itself). The investigation role is still created for local analysis.
+
 ---
 
-## Multi-Region
+## Multi-Region Deployment
 
-To cover multiple regions, run the script once per region:
+The initial `./deploy.sh` deploys to one region. To cover additional regions:
+
+### Option A: All regions (maximum coverage)
 
 ```bash
-for REGION in us-east-1 us-west-2 eu-west-1; do
-  AWS_DEFAULT_REGION=$REGION ./deploy.sh
+WEBHOOK=$(aws secretsmanager get-secret-value --secret-id devops-agent/backup-webhook --region us-west-2 --query SecretString --output text)
+WEBHOOK_URL=$(echo $WEBHOOK | python3 -c "import sys,json;print(json.load(sys.stdin)['webhookUrl'])")
+WEBHOOK_SECRET=$(echo $WEBHOOK | python3 -c "import sys,json;print(json.load(sys.stdin)['webhookSecret'])")
+
+for REGION in us-east-1 us-east-2 us-west-1 us-west-2 ca-central-1 \
+              eu-west-1 eu-west-2 eu-central-1 eu-north-1 \
+              ap-southeast-1 ap-southeast-2 ap-northeast-1 ap-south-1 \
+              sa-east-1; do
+  echo "Deploying to $REGION..."
+  aws cloudformation deploy --template-file templates/main-stack.yaml \
+    --stack-name BackupDevOpsAgent \
+    --parameter-overrides WebhookUrl="$WEBHOOK_URL" WebhookSecret="$WEBHOOK_SECRET" \
+      AgentSpaceId=YOUR_AGENT_SPACE_ID OrganizationId=YOUR_ORG_ID \
+    --capabilities CAPABILITY_NAMED_IAM --region $REGION --no-fail-on-empty-changeset
+  aws cloudformation create-stack-instances --stack-set-name BackupEventForwarder \
+    --deployment-targets OrganizationalUnitIds=YOUR_OU_ID --regions $REGION \
+    --call-as DELEGATED_ADMIN --region us-west-2 2>/dev/null || true
 done
+```
+
+### Option B: Specific regions only (recommended for cost-conscious deployments)
+
+Only deploy to regions where your backup plans are active:
+
+```bash
+# Customize this list to match your active backup regions
+for REGION in us-east-1 us-west-2 eu-central-1; do
+  # Same deploy commands as Option A
+done
+```
+
+> **Tip:** Deploy to the regions where you have active backup plans today. As your organization expands into new regions, re-run the loop with additional regions — no existing infrastructure is affected.
+
+### Verification (all regions)
+
+```bash
+for REGION in us-east-1 us-east-2 us-west-1 us-west-2 ca-central-1 eu-west-1 eu-west-2 eu-central-1 ap-southeast-1 ap-southeast-2 ap-northeast-1 ap-south-1 sa-east-1; do
+  STATUS=$(aws cloudformation describe-stacks --stack-name BackupDevOpsAgent --region $REGION --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo "NOT_DEPLOYED")
+  echo "$REGION: $STATUS"
+done
+
+aws cloudformation list-stack-instances \
+  --stack-set-name BackupEventForwarder \
+  --call-as DELEGATED_ADMIN --region us-west-2 \
+  --query 'Summaries[].{Account:Account,Region:Region,Status:StackInstanceStatus.DetailedStatus}' \
+  --output table
 ```
 
 ---
@@ -262,24 +317,33 @@ done
 ## Cleanup
 
 ```bash
-REGION=us-west-2
+# Set your values
+OU_ID=YOUR_OU_ID
+REGIONS="us-east-1 us-east-2 us-west-1 us-west-2 ca-central-1 eu-west-1 eu-west-2 eu-central-1 ap-southeast-1 ap-southeast-2 ap-northeast-1 ap-south-1 sa-east-1"
 
-# 1. Remove StackSet instances
+# 1. Remove StackSet instances (all regions at once)
 aws cloudformation delete-stack-instances \
   --stack-set-name BackupEventForwarder \
-  --deployment-targets OrganizationalUnitIds=YOUR_OU_ID \
-  --regions $REGION --no-retain-stacks \
-  --call-as DELEGATED_ADMIN --region $REGION
+  --deployment-targets OrganizationalUnitIds=$OU_ID \
+  --regions $REGIONS --no-retain-stacks \
+  --call-as DELEGATED_ADMIN --region us-west-2
 
 # 2. Wait, then delete StackSet
 aws cloudformation delete-stack-set \
   --stack-set-name BackupEventForwarder \
-  --call-as DELEGATED_ADMIN --region $REGION
+  --call-as DELEGATED_ADMIN --region us-west-2
 
-# 3. Delete main stack
-aws cloudformation delete-stack --stack-name BackupDevOpsAgent --region $REGION
+# 3. Delete main stack in all regions
+for REGION in $REGIONS; do
+  aws cloudformation delete-stack --stack-name BackupDevOpsAgent --region $REGION
+done
 
-# 4. (Optional) Delete Agent Space
+# 4. Delete IAM role (global)
+aws iam detach-role-policy --role-name DevOpsAgentBackupRole \
+  --policy-arn arn:aws:iam::aws:policy/AIDevOpsAgentAccessPolicy
+aws iam delete-role --role-name DevOpsAgentBackupRole
+
+# 5. (Optional) Delete Agent Space
 aws devops-agent delete-agent-space \
-  --agent-space-id YOUR_AGENT_SPACE_ID --region $REGION
+  --agent-space-id YOUR_AGENT_SPACE_ID --region us-west-2
 ```
