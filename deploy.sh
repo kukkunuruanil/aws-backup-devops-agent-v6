@@ -20,8 +20,16 @@ echo ""
 # --- Collect inputs ---
 read -p "Organization ID (e.g., o-xxxxxxxxxx): " ORG_ID
 read -p "Target OU ID (e.g., ou-xxxx-xxxxxxxx or r-xxxx for root): " OU_ID
-read -p "Region [$REGION]: " INPUT_REGION
-REGION="${INPUT_REGION:-$REGION}"
+read -p "Region (single region or 'all' for all regions) [$REGION]: " INPUT_REGION
+
+if [ "$INPUT_REGION" = "all" ]; then
+  REGIONS=("us-east-1" "us-east-2" "us-west-1" "us-west-2" "ca-central-1" "eu-west-1" "eu-west-2" "eu-west-3" "eu-central-1" "eu-north-1" "ap-southeast-1" "ap-southeast-2" "ap-northeast-1" "ap-northeast-2" "ap-south-1" "sa-east-1")
+  REGION="${REGIONS[0]}"
+  echo "  → Deploying to ALL ${#REGIONS[@]} regions"
+else
+  REGION="${INPUT_REGION:-$REGION}"
+  REGIONS=("$REGION")
+fi
 
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 EVENT_BUS_ARN="arn:aws:events:${REGION}:${ACCOUNT_ID}:event-bus/default"
