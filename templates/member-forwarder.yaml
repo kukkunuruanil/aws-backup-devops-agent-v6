@@ -1,0 +1,90 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Member account resources for AWS Backup DevOps Agent.
+  Deployed automatically via StackSet from the delegated admin account.
+  Creates: EventBridge forwarding rule + Investigation role for DevOps Agent.
+
+Parameters:
+  DelegatedAdminAccountId:
+    Type: String
+    Description: Account ID of the delegated admin (where Lambda and Agent live)
+  DelegatedAdminEventBusArn:
+    Type: String
+    Description: Event bus ARN of the delegated admin account
+
+Resources:
+  # --- EventBridge: Forward failed backup events to delegated admin ---
+  ForwardingRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: ForwardBackupFailures-ToCentral
+      Description: Forwards failed backup/copy events to delegated admin for investigation
+      State: ENABLED
+      EventPattern:
+        source:
+          - aws.backup
+        detail-type:
+          - Backup Job State Change
+          - Copy Job State Change
+        detail:
+          state:
+            - FAILED
+      Targets:
+        - Id: DelegatedAdminBus
+          Arn: !Ref DelegatedAdminEventBusArn
+          RoleArn: !GetAtt ForwardingRole.Arn
+
+  ForwardingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: BackupEventForwardingRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ForwardEvents
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: events:PutEvents
+                Resource: !Ref DelegatedAdminEventBusArn
+
+  # --- IAM: Investigation role for DevOps Agent cross-account access ---
+  InvestigationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: DevOpsAgentInvestigationRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${DelegatedAdminAccountId}:role/DevOpsAgentBackupRole
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: BackupInvestigationAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - backup:Describe*
+                  - backup:Get*
+                  - backup:List*
+                  - kms:DescribeKey
+                  - kms:GetKeyPolicy
+                  - kms:ListGrants
+                  - iam:GetRole
+                  - iam:GetRolePolicy
+                  - iam:ListAttachedRolePolicies
+                  - iam:ListRolePolicies
+                  - iam:GetPolicy
+                  - iam:GetPolicyVersion
+                  - cloudtrail:LookupEvents
+                  - config:GetResourceConfigHistory
+                Resource: '*'

@@ -1,0 +1,171 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  AWS Backup DevOps Agent - Main Stack (Delegated Admin Account).
+  Receives forwarded backup failure events from member accounts and triggers
+  DevOps Agent investigation via webhook.
+
+Parameters:
+  WebhookUrl:
+    Type: String
+    NoEcho: true
+    Description: DevOps Agent webhook URL
+  WebhookSecret:
+    Type: String
+    NoEcho: true
+    Description: DevOps Agent webhook HMAC secret
+  AgentSpaceId:
+    Type: String
+    Description: DevOps Agent space ID
+  OrganizationId:
+    Type: String
+    Description: AWS Organization ID (e.g., o-xxxxxxxxxx)
+
+Resources:
+  # --- EventBus Policy: Accept events from all org accounts ---
+  EventBusPolicy:
+    Type: AWS::Events::EventBusPolicy
+    Properties:
+      StatementId: AllowOrgForwardEvents
+      Action: events:PutEvents
+      Principal: '*'
+      Condition:
+        Type: StringEquals
+        Key: aws:PrincipalOrgID
+        Value: !Ref OrganizationId
+
+  # --- EventBridge Rule: Catch FAILED backup events (local + forwarded) ---
+  BackupFailureRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: BackupFailures-TriggerInvestigation
+      Description: Catches failed backup/copy jobs (local and forwarded from member accounts)
+      State: ENABLED
+      EventPattern:
+        source:
+          - aws.backup
+        detail-type:
+          - Backup Job State Change
+          - Copy Job State Change
+        detail:
+          state:
+            - FAILED
+      Targets:
+        - Id: BackupFailureBridge
+          Arn: !GetAtt BackupFailureBridge.Arn
+
+  # --- Lambda ---
+  BackupFailureBridge:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: BackupFailureBridge
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Timeout: 30
+      Role: !GetAtt LambdaRole.Arn
+      Code:
+        ZipFile: |
+          import json, hashlib, hmac, base64, urllib.request, boto3
+          from datetime import datetime, timezone
+
+          def get_webhook_creds():
+              client = boto3.client('secretsmanager')
+              secret = json.loads(client.get_secret_value(SecretId='devops-agent/backup-webhook')['SecretString'])
+              return secret['webhookUrl'], secret['webhookSecret']
+
+          def lambda_handler(event, context):
+              webhook_url, webhook_secret = get_webhook_creds()
+              detail = event.get('detail', {})
+              payload = {
+                  'eventType': 'incident',
+                  'incidentId': detail.get('backupJobId') or detail.get('copyJobId') or 'unknown',
+                  'action': 'created',
+                  'priority': 'HIGH',
+                  'title': f"AWS Backup Failed - {detail.get('statusMessage', 'Unknown')[:100]}",
+                  'description': (
+                      f"Account: {detail.get('accountId', '?')}, "
+                      f"Resource: {detail.get('resourceArn', '?')}, "
+                      f"Vault: {detail.get('backupVaultName', '?')}"
+                  ),
+                  'timestamp': datetime.now(timezone.utc).isoformat(),
+                  'service': 'aws.backup',
+                  'data': detail
+              }
+              body = json.dumps(payload)
+              ts = datetime.now(timezone.utc).isoformat()
+              sig = base64.b64encode(
+                  hmac.new(webhook_secret.encode(), f"{ts}:{body}".encode(), hashlib.sha256).digest()
+              ).decode()
+              req = urllib.request.Request(
+                  webhook_url, data=body.encode(),
+                  headers={'Content-Type': 'application/json', 'x-amzn-event-timestamp': ts, 'x-amzn-event-signature': sig},
+                  method='POST'
+              )
+              with urllib.request.urlopen(req) as resp:
+                  return {'statusCode': resp.status}
+
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref BackupFailureBridge
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt BackupFailureRule.Arn
+
+  # --- IAM: Lambda Role ---
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: BackupFailureBridgeRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: SecretsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref WebhookCredentials
+
+  # --- IAM: DevOps Agent Role ---
+  DevOpsAgentBackupRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: DevOpsAgentBackupRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: aidevops.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnEquals:
+                aws:SourceArn: !Sub arn:aws:aidevops:${AWS::Region}:${AWS::AccountId}:agentspace/${AgentSpaceId}
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AIDevOpsAgentAccessPolicy
+
+  # --- Secrets Manager ---
+  WebhookCredentials:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: devops-agent/backup-webhook
+      SecretString: !Sub '{"webhookUrl":"${WebhookUrl}","webhookSecret":"${WebhookSecret}"}'
+
+Outputs:
+  LambdaArn:
+    Value: !GetAtt BackupFailureBridge.Arn
+  AgentRoleArn:
+    Value: !GetAtt DevOpsAgentBackupRole.Arn
+  EventBusArn:
+    Value: !Sub arn:aws:events:${AWS::Region}:${AWS::AccountId}:event-bus/default
+    Description: Member accounts forward events to this bus
