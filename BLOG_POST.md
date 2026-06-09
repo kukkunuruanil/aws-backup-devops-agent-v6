@@ -82,47 +82,39 @@ cd aws-backup-devops-agent-v6
 ./deploy.sh
 ```
 
-The script prompts you for three inputs:
+The script prompts you for three inputs, then asks you to create a webhook in the console:
 
 | Prompt | Example |
 |--------|---------|
 | Organization ID | `o-abc1234567` |
 | Target OU ID | `ou-xxxx-xxxxxxxx` or `r-xxxx` (root) |
 | Region | `us-west-2` |
+| Webhook URL | From DevOps Agent console (Capabilities → Webhook → Generate) |
+| Webhook Secret | HMAC secret from the console |
 
 The script then performs five automated steps:
 
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-[1/5] Creating DevOps Agent Space & Webhook...
+[1/5] Creating DevOps Agent Space...
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   → Creating Agent Space: BackupInvestigations
   ✓ Agent Space ID: a1b2c3d4-e5f6-7890-abcd-ef1234567890
-  → Creating HMAC webhook...
-  ✓ Webhook URL: https://webhooks.devops-agent...
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-[2/5] Deploying main stack in 111122223333 (us-west-2)...
+[2/5] Creating IAM role & associating AWS account...
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Waiting for stack create/update to complete
-  ✓ Main stack deployed
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-[3/5] Associating account with DevOps Agent...
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ✓ IAM role created
   ✓ Account associated
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-[4/5] Deploying event forwarder + investigation role to member accounts...
+[3/5] Configuring webhook & deploying main stack...
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  → Creating StackSet: BackupEventForwarder
-  ✓ StackSet created
-  → Deploying to OU: ou-xxxx-xxxxxxxx in region us-west-2...
-  → Waiting for StackSet deployment (Operation: abc123...)
-    Status: RUNNING ...
-    Status: RUNNING ...
-  ✓ StackSet deployment SUCCEEDED
+  (You provide the webhook URL and secret from the console)
+  ✓ Main stack deployed
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+[4/5] Deploying event forwarder + investigation role to member accounts...
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 [5/5] Verifying StackSet deployment across accounts...
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

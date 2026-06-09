@@ -78,15 +78,19 @@ cd aws-backup-devops-agent-v6
 
 ### Step 2.2: Prompts
 
-The script asks for **3 inputs only** — everything else is automated:
+The script asks for **3 inputs** plus webhook credentials — everything else is automated:
 
 | Prompt | Example | Where to find it |
 |--------|---------|-------------------|
 | Organization ID | `o-abc1234567` | AWS Organizations console or `aws organizations describe-organization` |
 | Target OU ID | `ou-xxxx-xxxxxxxx` | AWS Organizations → Organizational units |
 | Region | `us-west-2` | Your primary backup region |
+| Webhook URL | `https://event-ai...` | DevOps Agent console → Capabilities → Webhook |
+| Webhook Secret | (hidden) | Generated when creating the webhook |
 
 > **Tip:** Use `r-xxxx` (root ID) to cover all accounts in the organization.
+
+> **Webhook Setup:** During Step 3/5, the script pauses and asks for webhook credentials. Open the DevOps Agent console, select your Agent Space, go to Capabilities → Webhook → Generate webhook (HMAC type), then copy the URL and secret back into the terminal.
 
 ### Step 2.3: Automated Steps
 
@@ -94,9 +98,9 @@ The script performs 5 steps automatically:
 
 | Step | Action | What it creates |
 |------|--------|----------------|
-| 1/5 | Create Agent Space & Webhook | DevOps Agent space + HMAC webhook |
-| 2/5 | Deploy main stack | Lambda, EventBridge, IAM, Secrets Manager |
-| 3/5 | Associate account | Links AWS account to Agent Space |
+| 1/5 | Create Agent Space | DevOps Agent space via CLI |
+| 2/5 | Create IAM role & associate AWS | IAM role + account association |
+| 3/5 | Configure webhook & deploy stack | Lambda, EventBridge, IAM, Secrets Manager |
 | 4/5 | Deploy StackSet | Event forwarder + investigation role to all member accounts |
 | 5/5 | Verify deployment | Shows per-account status table + Lambda test |
 
@@ -104,34 +108,25 @@ Expected output:
 
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-[1/5] Creating DevOps Agent Space & Webhook...
+[1/5] Creating DevOps Agent Space...
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   → Creating Agent Space: BackupInvestigations
   ✓ Agent Space ID: a1b2c3d4-e5f6-7890-abcd-ef1234567890
-  → Creating HMAC webhook...
-  ✓ Webhook URL: https://webhooks.devops-agent...
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-[2/5] Deploying main stack in 111122223333 (us-west-2)...
+[2/5] Creating IAM role & associating AWS account...
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Waiting for stack create/update to complete
-  ✓ Main stack deployed
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-[3/5] Associating account with DevOps Agent...
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ✓ IAM role created
   ✓ Account associated
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-[4/5] Deploying event forwarder + investigation role to member accounts...
+[3/5] Configuring webhook & deploying main stack...
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  → Creating StackSet: BackupEventForwarder
-  ✓ StackSet created
-  → Deploying to OU: ou-xxxx-xxxxxxxx in region us-west-2...
-  → Waiting for StackSet deployment (Operation: abc123...)
-    Status: RUNNING ...
-  ✓ StackSet deployment SUCCEEDED
+  (Provide webhook URL and secret from console)
+  ✓ Main stack deployed
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+[4/5] Deploying event forwarder + investigation role to member accounts...
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 [5/5] Verifying StackSet deployment across accounts...
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
