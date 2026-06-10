@@ -60,8 +60,10 @@ Resources:
                 Resource: !Ref DelegatedAdminEventBusArn
 
   # --- IAM: Investigation role for DevOps Agent cross-account access ---
+  # Skipped on delegated admin (already has DevOpsAgentBackupRole with full access)
   InvestigationRole:
     Type: AWS::IAM::Role
+    Condition: IsNotDelegatedAdmin
     Properties:
       RoleName: DevOpsAgentInvestigationRole
       AssumeRolePolicyDocument:
