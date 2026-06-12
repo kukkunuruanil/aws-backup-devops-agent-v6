@@ -2,7 +2,8 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   Member account resources for AWS Backup DevOps Agent.
   Deployed via StackSet from the delegated admin account to ALL regions.
-  Creates: EventBridge forwarding rule (every region) + IAM roles (once, since IAM is global).
+  EventBridge forwarding rule deploys in every region.
+  IAM roles deploy only in us-east-1 (IAM is global).
 
 Parameters:
   DelegatedAdminAccountId:
@@ -11,21 +12,22 @@ Parameters:
 
 Conditions:
   IsNotDelegatedAdmin: !Not [!Equals [!Ref "AWS::AccountId", !Ref DelegatedAdminAccountId]]
-  # IAM roles are global - only create them in us-east-1 to avoid conflicts
+  # IAM roles are global - only create in us-east-1 to avoid naming conflicts
   IsIAMRegion: !Equals [!Ref "AWS::Region", "us-east-1"]
+  CreateEventBridge: !Condition IsNotDelegatedAdmin
   CreateIAM: !And
     - !Condition IsNotDelegatedAdmin
     - !Condition IsIAMRegion
 
 Resources:
   # ─────────────────────────────────────────────────────────────────
-  # EventBridge rule - deploys in EVERY region
-  # Forwards failed backup/copy events to the delegated admin's
-  # event bus in the SAME region, triggering the DevOps Agent.
+  # EventBridge rule - deploys in EVERY region (regional resource)
+  # Forwards failed backup/copy events to delegated admin's event bus
+  # in the SAME region for processing by DevOps Agent.
   # ─────────────────────────────────────────────────────────────────
   ForwardingRule:
     Type: AWS::Events::Rule
-    Condition: IsNotDelegatedAdmin
+    Condition: CreateEventBridge
     Properties:
       Name: ForwardBackupFailures-ToCentral
       Description: Forwards failed backup/copy events to delegated admin for investigation
@@ -39,17 +41,21 @@ Resources:
         detail:
           state:
             - FAILED
+            - ABORTED
+            - EXPIRED
       Targets:
         - Id: DelegatedAdminBus
           Arn: !Sub arn:aws:events:${AWS::Region}:${DelegatedAdminAccountId}:event-bus/default
           RoleArn: !Sub arn:aws:iam::${AWS::AccountId}:role/BackupEventForwardingRole
 
   # ─────────────────────────────────────────────────────────────────
-  # IAM Roles - created ONCE (us-east-1 only, IAM is global)
+  # IAM Roles - created ONCE in us-east-1 only (IAM is global)
+  # DeletionPolicy: Retain ensures roles survive accidental stack deletion
   # ─────────────────────────────────────────────────────────────────
   ForwardingRole:
     Type: AWS::IAM::Role
     Condition: CreateIAM
+    DeletionPolicy: Retain
     Properties:
       RoleName: BackupEventForwardingRole
       AssumeRolePolicyDocument:
@@ -69,10 +75,11 @@ Resources:
                 Resource: !Sub arn:aws:events:*:${DelegatedAdminAccountId}:event-bus/default
 
   # Investigation role - allows DevOps Agent to assume into member accounts
-  # for RCA via CloudTrail, Backup APIs, KMS, IAM, and Config
+  # for root cause analysis via CloudTrail, Backup, KMS, IAM, Config, EC2, RDS
   InvestigationRole:
     Type: AWS::IAM::Role
     Condition: CreateIAM
+    DeletionPolicy: Retain
     Properties:
       RoleName: DevOpsAgentInvestigationRole
       AssumeRolePolicyDocument:
@@ -89,26 +96,51 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
+                  # AWS Backup - full read for job details
                   - backup:Describe*
                   - backup:Get*
                   - backup:List*
+                  # KMS - check key policies for access issues
                   - kms:DescribeKey
                   - kms:GetKeyPolicy
                   - kms:ListGrants
+                  - kms:ListKeyPolicies
+                  # IAM - verify role permissions
                   - iam:GetRole
                   - iam:GetRolePolicy
                   - iam:ListAttachedRolePolicies
                   - iam:ListRolePolicies
                   - iam:GetPolicy
                   - iam:GetPolicyVersion
+                  # CloudTrail - find RCA from event history
                   - cloudtrail:LookupEvents
                   - cloudtrail:GetTrailStatus
                   - cloudtrail:DescribeTrails
+                  - cloudtrail:GetEventSelectors
+                  # Config - resource configuration history
                   - config:GetResourceConfigHistory
                   - config:BatchGetResourceConfig
+                  - config:GetComplianceDetailsByResource
+                  # EC2 - check volume/instance/snapshot state
                   - ec2:DescribeVolumes
                   - ec2:DescribeInstances
                   - ec2:DescribeSnapshots
+                  - ec2:DescribeImages
+                  # RDS - check DB instance/snapshot state
                   - rds:DescribeDBInstances
                   - rds:DescribeDBSnapshots
+                  - rds:DescribeDBClusters
+                  - rds:DescribeDBClusterSnapshots
+                  # EFS/FSx - check filesystem state
+                  - elasticfilesystem:DescribeFileSystems
+                  - fsx:DescribeFileSystems
+                  - fsx:DescribeBackups
+                  # DynamoDB - check table state
+                  - dynamodb:DescribeTable
+                  - dynamodb:DescribeBackup
+                  - dynamodb:ListBackups
+                  # S3 - check bucket for S3 backup issues
+                  - s3:GetBucketLocation
+                  - s3:GetBucketPolicy
+                  - s3:GetBucketVersioning
                 Resource: '*'

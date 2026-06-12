@@ -3,17 +3,19 @@ set -e
 
 STACK_NAME="BackupDevOpsAgent"
 STACKSET_NAME="BackupEventForwarder"
-REGION="${AWS_DEFAULT_REGION:-us-west-2}"
+REGION="${AWS_DEFAULT_REGION:-us-east-1}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "╔════════════════════════════════════════════════════════════╗"
 echo "║     AWS Backup DevOps Agent v6 - Automated Deployment     ║"
 echo "╠════════════════════════════════════════════════════════════╣"
-echo "║  This script:                                             ║"
+echo "║  This script (run from DELEGATED ADMIN account):          ║"
 echo "║   1. Creates DevOps Agent Space & associates AWS account  ║"
 echo "║   2. Deploys main stack (Lambda, EventBridge, IAM)        ║"
-echo "║   3. Deploys StackSet to all member accounts              ║"
+echo "║   3. Deploys StackSet to ALL member accounts/regions      ║"
 echo "║   4. Verifies deployment across all accounts              ║"
+echo "║                                                           ║"
+echo "║  Idempotent: safe to re-run. Handles existing resources.  ║"
 echo "╚════════════════════════════════════════════════════════════╝"
 echo ""
 
@@ -32,13 +34,13 @@ else
 fi
 
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-EVENT_BUS_ARN="arn:aws:events:${REGION}:${ACCOUNT_ID}:event-bus/default"
 
 echo ""
-echo "  Account:  $ACCOUNT_ID"
-echo "  Region:   $REGION"
+echo "  Account:  $ACCOUNT_ID (delegated admin)"
+echo "  Region:   $REGION (primary)"
 echo "  Org:      $ORG_ID"
 echo "  OU:       $OU_ID"
+echo "  Regions:  ${#REGIONS[@]} total"
 echo ""
 
 # ═══════════════════════════════════════════════════════════════════
@@ -196,18 +198,34 @@ echo "  ✓ Main stack deployed"
 echo ""
 
 # ═══════════════════════════════════════════════════════════════════
-# STEP 4: Deploy StackSet to member accounts
+# STEP 4: Deploy StackSet to member accounts (ALL regions)
 # ═══════════════════════════════════════════════════════════════════
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "[4/5] Deploying event forwarder + investigation role to member accounts..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+# Wait for any in-progress operation to complete
+echo "  → Checking for in-progress StackSet operations..."
+while true; do
+  IN_PROGRESS=$(aws cloudformation list-stack-set-operations \
+    --stack-set-name "$STACKSET_NAME" \
+    --call-as DELEGATED_ADMIN \
+    --region "$REGION" \
+    --query "Summaries[?Status=='RUNNING'].OperationId | [0]" \
+    --output text 2>/dev/null || echo "None")
+  if [ "$IN_PROGRESS" = "None" ] || [ -z "$IN_PROGRESS" ]; then
+    break
+  fi
+  echo "    Waiting for operation $IN_PROGRESS to complete..."
+  sleep 15
+done
 
 # Create or update StackSet
 if aws cloudformation describe-stack-set \
   --stack-set-name "$STACKSET_NAME" \
   --call-as DELEGATED_ADMIN \
   --region "$REGION" >/dev/null 2>&1; then
-  echo "  → StackSet exists, updating..."
+  echo "  → StackSet exists, updating template..."
   aws cloudformation update-stack-set \
     --stack-set-name "$STACKSET_NAME" \
     --template-body "file://$SCRIPT_DIR/templates/member-forwarder.yaml" \
@@ -215,7 +233,23 @@ if aws cloudformation describe-stack-set \
     --capabilities CAPABILITY_NAMED_IAM \
     --operation-preferences "FailureTolerancePercentage=100,MaxConcurrentPercentage=100" \
     --call-as DELEGATED_ADMIN \
-    --region "$REGION" 2>/dev/null && echo "  ✓ StackSet updated" || echo "  ✓ No changes needed"
+    --region "$REGION" 2>/dev/null && echo "  ✓ StackSet updated" || echo "  ✓ No template changes needed"
+
+  # Wait for update to complete
+  sleep 5
+  while true; do
+    IN_PROGRESS=$(aws cloudformation list-stack-set-operations \
+      --stack-set-name "$STACKSET_NAME" \
+      --call-as DELEGATED_ADMIN \
+      --region "$REGION" \
+      --query "Summaries[?Status=='RUNNING'].OperationId | [0]" \
+      --output text 2>/dev/null || echo "None")
+    if [ "$IN_PROGRESS" = "None" ] || [ -z "$IN_PROGRESS" ]; then
+      break
+    fi
+    echo "    Waiting for update to complete..."
+    sleep 10
+  done
 else
   echo "  → Creating StackSet: $STACKSET_NAME"
   aws cloudformation create-stack-set \
@@ -230,9 +264,36 @@ else
   echo "  ✓ StackSet created"
 fi
 
+# Delete any FAILED/OUTDATED instances before re-deploying
+echo "  → Checking for failed stack instances to clean up..."
+FAILED_INSTANCES=$(aws cloudformation list-stack-instances \
+  --stack-set-name "$STACKSET_NAME" \
+  --call-as DELEGATED_ADMIN \
+  --region "$REGION" \
+  --query "Summaries[?StackInstanceStatus.DetailedStatus=='FAILED'].[Account,Region]" \
+  --output text 2>/dev/null)
+
+if [ -n "$FAILED_INSTANCES" ]; then
+  echo "  → Deleting failed instances before retry..."
+  while IFS=$'\t' read -r ACCT RGN; do
+    echo "    Removing failed instance: $ACCT / $RGN"
+    aws cloudformation delete-stack-instances \
+      --stack-set-name "$STACKSET_NAME" \
+      --deployment-targets "Accounts=$ACCT" \
+      --regions "$RGN" \
+      --no-retain-stacks \
+      --call-as DELEGATED_ADMIN \
+      --region "$REGION" \
+      --operation-preferences "FailureTolerancePercentage=100" >/dev/null 2>&1 || true
+  done <<< "$FAILED_INSTANCES"
+
+  echo "  → Waiting for cleanup..."
+  sleep 30
+fi
+
 # Deploy instances to ALL selected regions
 REGIONS_LIST=$(printf '%s ' "${REGIONS[@]}")
-echo "  → Deploying to OU: $OU_ID in regions: $REGIONS_LIST"
+echo "  → Deploying to OU: $OU_ID across ${#REGIONS[@]} regions..."
 OPERATION_ID=$(aws cloudformation create-stack-instances \
   --stack-set-name "$STACKSET_NAME" \
   --deployment-targets "OrganizationalUnitIds=$OU_ID" \
@@ -241,8 +302,16 @@ OPERATION_ID=$(aws cloudformation create-stack-instances \
   --call-as DELEGATED_ADMIN \
   --region "$REGION" \
   --query 'OperationId' --output text 2>/dev/null) || {
-    echo "  ✓ Instances already deployed"
-    OPERATION_ID=""
+    echo "  ✓ All instances already deployed, forcing update..."
+    # If instances exist, force an update to apply template changes
+    OPERATION_ID=$(aws cloudformation update-stack-instances \
+      --stack-set-name "$STACKSET_NAME" \
+      --deployment-targets "OrganizationalUnitIds=$OU_ID" \
+      --regions ${REGIONS[@]} \
+      --operation-preferences "FailureTolerancePercentage=100,MaxConcurrentPercentage=100" \
+      --call-as DELEGATED_ADMIN \
+      --region "$REGION" \
+      --query 'OperationId' --output text 2>/dev/null) || OPERATION_ID=""
 }
 
 # Wait for StackSet operation to complete
@@ -257,8 +326,12 @@ if [ -n "$OPERATION_ID" ]; then
       --query 'StackSetOperation.Status' --output text 2>/dev/null)
     case "$STATUS" in
       SUCCEEDED) echo "  ✓ StackSet deployment SUCCEEDED"; break ;;
-      FAILED|STOPPED) echo "  ✗ StackSet deployment $STATUS"; break ;;
-      *) echo "    Status: $STATUS ..."; sleep 10 ;;
+      FAILED)
+        echo "  ⚠ StackSet deployment completed with some failures (FailureTolerance=100%)"
+        echo "    Check individual instance status below"
+        break ;;
+      STOPPED) echo "  ✗ StackSet deployment STOPPED"; break ;;
+      *) echo "    Status: $STATUS ..."; sleep 15 ;;
     esac
   done
 fi
@@ -272,9 +345,13 @@ echo "[5/5] Verifying StackSet deployment across accounts..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 echo ""
-echo "  ┌─────────────────┬──────────┬───────────────────────┐"
-echo "  │ Account         │ Region   │ Status                │"
-echo "  ├─────────────────┼──────────┼───────────────────────┤"
+echo "  ┌─────────────────┬──────────────────┬───────────────────────┐"
+echo "  │ Account         │ Region           │ Status                │"
+echo "  ├─────────────────┼──────────────────┼───────────────────────┤"
+
+TOTAL=0
+SUCCEEDED=0
+FAILED_COUNT=0
 
 aws cloudformation list-stack-instances \
   --stack-set-name "$STACKSET_NAME" \
@@ -284,13 +361,18 @@ aws cloudformation list-stack-instances \
   --output json 2>/dev/null | python3 -c "
 import sys, json
 instances = json.load(sys.stdin)
-for i in instances:
+total = len(instances)
+succeeded = sum(1 for i in instances if i.get('Status') == 'SUCCEEDED')
+failed = sum(1 for i in instances if i.get('Status') == 'FAILED')
+for i in sorted(instances, key=lambda x: (x['Account'], x['Region'])):
     status = i.get('Status','UNKNOWN')
-    icon = '✓' if status == 'SUCCEEDED' else '✗'
-    print(f\"  │ {i['Account']:15} │ {i['Region']:8} │ {icon} {status:19} │\")
-" 2>/dev/null || echo "  │ (pending)       │          │ Deploying...          │"
+    icon = '✓' if status == 'SUCCEEDED' else '⚠' if status == 'PENDING' else '✗'
+    print(f\"  │ {i['Account']:15} │ {i['Region']:16} │ {icon} {status:19} │\")
+print(f\"  └─────────────────┴──────────────────┴───────────────────────┘\")
+print(f\"\")
+print(f\"  Summary: {succeeded}/{total} succeeded, {failed} failed\")
+" 2>/dev/null || echo "  │ (pending)       │                  │ Deploying...          │"
 
-echo "  └─────────────────┴──────────┴───────────────────────┘"
 echo ""
 
 # Test Lambda
@@ -308,6 +390,11 @@ echo "║                                                           ║"
 echo "║  Agent Space:  $AGENT_SPACE_ID"
 echo "║  Stack:        $STACK_NAME ($REGION)"
 echo "║  StackSet:     $STACKSET_NAME (auto-deploys to new accts)"
+echo "║  Regions:      ${#REGIONS[@]} regions"
+echo "║                                                           ║"
+echo "║  EventBridge:  Forwarding rules in ALL regions            ║"
+echo "║  IAM:          Investigation role in all member accounts  ║"
+echo "║  Auto-deploy:  New accounts get resources automatically   ║"
 echo "║                                                           ║"
 echo "╠════════════════════════════════════════════════════════════╣"
 echo "║  REMAINING: Connect Slack                                 ║"
