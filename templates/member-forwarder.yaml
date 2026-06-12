@@ -2,7 +2,7 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   Member account resources for AWS Backup DevOps Agent.
   Deployed automatically via StackSet from the delegated admin account.
-  Creates: EventBridge forwarding rule + Investigation role for DevOps Agent.
+  Creates: EventBridge forwarding rule (all regions) + IAM roles (us-east-1 only, since IAM is global).
 
 Parameters:
   DelegatedAdminAccountId:
@@ -11,12 +11,20 @@ Parameters:
   DelegatedAdminEventBusArn:
     Type: String
     Description: Event bus ARN of the delegated admin account (used as fallback)
+  IAMRegion:
+    Type: String
+    Default: us-east-1
+    Description: Region where IAM roles are created (IAM is global, only need once)
 
 Conditions:
   IsNotDelegatedAdmin: !Not [!Equals [!Ref "AWS::AccountId", !Ref DelegatedAdminAccountId]]
+  IsIAMRegion: !Equals [!Ref "AWS::Region", !Ref IAMRegion]
+  CreateIAM: !And
+    - !Condition IsNotDelegatedAdmin
+    - !Condition IsIAMRegion
 
 Resources:
-  # --- EventBridge: Forward failed backup events to delegated admin ---
+  # --- EventBridge: Forward failed backup events to delegated admin (ALL regions) ---
   ForwardingRule:
     Type: AWS::Events::Rule
     Condition: IsNotDelegatedAdmin
@@ -36,11 +44,12 @@ Resources:
       Targets:
         - Id: DelegatedAdminBus
           Arn: !Sub arn:aws:events:${AWS::Region}:${DelegatedAdminAccountId}:event-bus/default
-          RoleArn: !GetAtt ForwardingRole.Arn
+          RoleArn: !Sub arn:aws:iam::${AWS::AccountId}:role/BackupEventForwardingRole
 
+  # --- IAM roles: Created ONLY in one region (IAM is global) ---
   ForwardingRole:
     Type: AWS::IAM::Role
-    Condition: IsNotDelegatedAdmin
+    Condition: CreateIAM
     Properties:
       RoleName: BackupEventForwardingRole
       AssumeRolePolicyDocument:
@@ -57,13 +66,11 @@ Resources:
             Statement:
               - Effect: Allow
                 Action: events:PutEvents
-                Resource: !Sub arn:aws:events:${AWS::Region}:${DelegatedAdminAccountId}:event-bus/default
+                Resource: !Sub arn:aws:events:*:${DelegatedAdminAccountId}:event-bus/default
 
-  # --- IAM: Investigation role for DevOps Agent cross-account access ---
-  # Skipped on delegated admin (already has DevOpsAgentBackupRole with full access)
   InvestigationRole:
     Type: AWS::IAM::Role
-    Condition: IsNotDelegatedAdmin
+    Condition: CreateIAM
     Properties:
       RoleName: DevOpsAgentInvestigationRole
       AssumeRolePolicyDocument:
