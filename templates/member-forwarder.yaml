@@ -10,7 +10,7 @@ Parameters:
     Description: Account ID of the delegated admin (where Lambda and Agent live)
   DelegatedAdminEventBusArn:
     Type: String
-    Description: Event bus ARN of the delegated admin account
+    Description: Event bus ARN of the delegated admin account (used as fallback)
 
 Conditions:
   IsNotDelegatedAdmin: !Not [!Equals [!Ref "AWS::AccountId", !Ref DelegatedAdminAccountId]]
@@ -35,7 +35,7 @@ Resources:
             - FAILED
       Targets:
         - Id: DelegatedAdminBus
-          Arn: !Ref DelegatedAdminEventBusArn
+          Arn: !Sub arn:aws:events:${AWS::Region}:${DelegatedAdminAccountId}:event-bus/default
           RoleArn: !GetAtt ForwardingRole.Arn
 
   ForwardingRole:
@@ -57,7 +57,7 @@ Resources:
             Statement:
               - Effect: Allow
                 Action: events:PutEvents
-                Resource: !Ref DelegatedAdminEventBusArn
+                Resource: !Sub arn:aws:events:${AWS::Region}:${DelegatedAdminAccountId}:event-bus/default
 
   # --- IAM: Investigation role for DevOps Agent cross-account access ---
   # Skipped on delegated admin (already has DevOpsAgentBackupRole with full access)

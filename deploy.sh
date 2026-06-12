@@ -231,12 +231,13 @@ else
   echo "  ✓ StackSet created"
 fi
 
-# Deploy instances
-echo "  → Deploying to OU: $OU_ID in region $REGION..."
+# Deploy instances to ALL selected regions
+REGIONS_LIST=$(printf '%s ' "${REGIONS[@]}")
+echo "  → Deploying to OU: $OU_ID in regions: $REGIONS_LIST"
 OPERATION_ID=$(aws cloudformation create-stack-instances \
   --stack-set-name "$STACKSET_NAME" \
   --deployment-targets "OrganizationalUnitIds=$OU_ID" \
-  --regions "$REGION" \
+  --regions ${REGIONS[@]} \
   --call-as DELEGATED_ADMIN \
   --region "$REGION" \
   --query 'OperationId' --output text 2>/dev/null) || {
