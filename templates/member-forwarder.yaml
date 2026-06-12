@@ -1,30 +1,28 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   Member account resources for AWS Backup DevOps Agent.
-  Deployed automatically via StackSet from the delegated admin account.
-  Creates: EventBridge forwarding rule (all regions) + IAM roles (us-east-1 only, since IAM is global).
+  Deployed via StackSet from the delegated admin account to ALL regions.
+  Creates: EventBridge forwarding rule (every region) + IAM roles (once, since IAM is global).
 
 Parameters:
   DelegatedAdminAccountId:
     Type: String
     Description: Account ID of the delegated admin (where Lambda and Agent live)
-  DelegatedAdminEventBusArn:
-    Type: String
-    Description: Event bus ARN of the delegated admin account (used as fallback)
-  IAMRegion:
-    Type: String
-    Default: us-east-1
-    Description: Region where IAM roles are created (IAM is global, only need once)
 
 Conditions:
   IsNotDelegatedAdmin: !Not [!Equals [!Ref "AWS::AccountId", !Ref DelegatedAdminAccountId]]
-  IsIAMRegion: !Equals [!Ref "AWS::Region", !Ref IAMRegion]
+  # IAM roles are global - only create them in us-east-1 to avoid conflicts
+  IsIAMRegion: !Equals [!Ref "AWS::Region", "us-east-1"]
   CreateIAM: !And
     - !Condition IsNotDelegatedAdmin
     - !Condition IsIAMRegion
 
 Resources:
-  # --- EventBridge: Forward failed backup events to delegated admin (ALL regions) ---
+  # ─────────────────────────────────────────────────────────────────
+  # EventBridge rule - deploys in EVERY region
+  # Forwards failed backup/copy events to the delegated admin's
+  # event bus in the SAME region, triggering the DevOps Agent.
+  # ─────────────────────────────────────────────────────────────────
   ForwardingRule:
     Type: AWS::Events::Rule
     Condition: IsNotDelegatedAdmin
@@ -46,7 +44,9 @@ Resources:
           Arn: !Sub arn:aws:events:${AWS::Region}:${DelegatedAdminAccountId}:event-bus/default
           RoleArn: !Sub arn:aws:iam::${AWS::AccountId}:role/BackupEventForwardingRole
 
-  # --- IAM roles: Created ONLY in one region (IAM is global) ---
+  # ─────────────────────────────────────────────────────────────────
+  # IAM Roles - created ONCE (us-east-1 only, IAM is global)
+  # ─────────────────────────────────────────────────────────────────
   ForwardingRole:
     Type: AWS::IAM::Role
     Condition: CreateIAM
@@ -68,6 +68,8 @@ Resources:
                 Action: events:PutEvents
                 Resource: !Sub arn:aws:events:*:${DelegatedAdminAccountId}:event-bus/default
 
+  # Investigation role - allows DevOps Agent to assume into member accounts
+  # for RCA via CloudTrail, Backup APIs, KMS, IAM, and Config
   InvestigationRole:
     Type: AWS::IAM::Role
     Condition: CreateIAM
@@ -100,5 +102,13 @@ Resources:
                   - iam:GetPolicy
                   - iam:GetPolicyVersion
                   - cloudtrail:LookupEvents
+                  - cloudtrail:GetTrailStatus
+                  - cloudtrail:DescribeTrails
                   - config:GetResourceConfigHistory
+                  - config:BatchGetResourceConfig
+                  - ec2:DescribeVolumes
+                  - ec2:DescribeInstances
+                  - ec2:DescribeSnapshots
+                  - rds:DescribeDBInstances
+                  - rds:DescribeDBSnapshots
                 Resource: '*'

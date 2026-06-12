@@ -212,8 +212,8 @@ if aws cloudformation describe-stack-set \
     --stack-set-name "$STACKSET_NAME" \
     --template-body "file://$SCRIPT_DIR/templates/member-forwarder.yaml" \
     --parameters "ParameterKey=DelegatedAdminAccountId,ParameterValue=$ACCOUNT_ID" \
-                 "ParameterKey=DelegatedAdminEventBusArn,ParameterValue=$EVENT_BUS_ARN" \
     --capabilities CAPABILITY_NAMED_IAM \
+    --operation-preferences "FailureTolerancePercentage=100,MaxConcurrentPercentage=100" \
     --call-as DELEGATED_ADMIN \
     --region "$REGION" 2>/dev/null && echo "  ✓ StackSet updated" || echo "  ✓ No changes needed"
 else
@@ -222,7 +222,6 @@ else
     --stack-set-name "$STACKSET_NAME" \
     --template-body "file://$SCRIPT_DIR/templates/member-forwarder.yaml" \
     --parameters "ParameterKey=DelegatedAdminAccountId,ParameterValue=$ACCOUNT_ID" \
-                 "ParameterKey=DelegatedAdminEventBusArn,ParameterValue=$EVENT_BUS_ARN" \
     --permission-model SERVICE_MANAGED \
     --auto-deployment "Enabled=true,RetainStacksOnAccountRemoval=false" \
     --capabilities CAPABILITY_NAMED_IAM \
@@ -238,6 +237,7 @@ OPERATION_ID=$(aws cloudformation create-stack-instances \
   --stack-set-name "$STACKSET_NAME" \
   --deployment-targets "OrganizationalUnitIds=$OU_ID" \
   --regions ${REGIONS[@]} \
+  --operation-preferences "FailureTolerancePercentage=100,MaxConcurrentPercentage=100" \
   --call-as DELEGATED_ADMIN \
   --region "$REGION" \
   --query 'OperationId' --output text 2>/dev/null) || {
