@@ -3,8 +3,8 @@ Description: >
   Member account resources for AWS Backup DevOps Agent.
   Deployed via StackSet from the delegated admin account to ALL regions.
   EventBridge forwarding rule deploys in every region.
-  All events forward to delegated admin's us-east-1 bus (where Lambda lives).
-  IAM roles deploy only in us-east-1 (IAM is global).
+  All events forward to delegated admin's central bus (user-chosen region).
+  IAM roles deploy only once (IAM is global).
 
 Parameters:
   DelegatedAdminAccountId:
@@ -12,13 +12,12 @@ Parameters:
     Description: Account ID of the delegated admin (where Lambda and Agent live)
   CentralRegion:
     Type: String
-    Default: us-east-1
-    Description: Region where the main stack (Lambda + EventBus policy) is deployed
+    Description: Region where the main stack (Lambda + EventBus policy) is deployed in delegated admin
 
 Conditions:
   IsNotDelegatedAdmin: !Not [!Equals [!Ref "AWS::AccountId", !Ref DelegatedAdminAccountId]]
-  # IAM roles are global - only create in us-east-1 to avoid naming conflicts
-  IsIAMRegion: !Equals [!Ref "AWS::Region", "us-east-1"]
+  # IAM roles are global - only create in the central region to avoid naming conflicts
+  IsIAMRegion: !Equals [!Ref "AWS::Region", !Ref CentralRegion]
   CreateEventBridge: !Condition IsNotDelegatedAdmin
   CreateIAM: !And
     - !Condition IsNotDelegatedAdmin
@@ -27,7 +26,7 @@ Conditions:
 Resources:
   # ─────────────────────────────────────────────────────────────────
   # EventBridge rule - deploys in EVERY region (regional resource)
-  # ALL regions forward to the CENTRAL region (us-east-1) in the
+  # ALL regions forward to the user-chosen CENTRAL region in the
   # delegated admin where the Lambda + event bus policy lives.
   # ─────────────────────────────────────────────────────────────────
   ForwardingRule:
@@ -54,7 +53,7 @@ Resources:
           RoleArn: !Sub arn:aws:iam::${AWS::AccountId}:role/BackupEventForwardingRole
 
   # ─────────────────────────────────────────────────────────────────
-  # IAM Roles - created ONCE in us-east-1 only (IAM is global)
+  # IAM Roles - created ONCE in central region only (IAM is global)
   # DeletionPolicy: Retain ensures roles survive accidental stack deletion
   # ─────────────────────────────────────────────────────────────────
   ForwardingRole:

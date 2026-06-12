@@ -22,25 +22,31 @@ echo ""
 # --- Collect inputs ---
 read -p "Organization ID (e.g., o-xxxxxxxxxx): " ORG_ID
 read -p "Target OU ID (e.g., ou-xxxx-xxxxxxxx or r-xxxx for root): " OU_ID
-read -p "Region (single region or 'all' for all regions) [$REGION]: " INPUT_REGION
+read -p "Delegated admin region (where Lambda + Agent live) [$REGION]: " INPUT_REGION
+REGION="${INPUT_REGION:-$REGION}"
 
-if [ "$INPUT_REGION" = "all" ]; then
+echo ""
+echo "  This region ($REGION) will host the main stack (Lambda, EventBus, Agent)."
+echo "  Member accounts will forward backup failure events to this region."
+echo ""
+read -p "Member account regions ('all' for all regions, or same as above) [all]: " MEMBER_REGIONS
+
+if [ "$MEMBER_REGIONS" = "" ] || [ "$MEMBER_REGIONS" = "all" ]; then
   REGIONS=("us-east-1" "us-east-2" "us-west-1" "us-west-2" "ca-central-1" "eu-west-1" "eu-west-2" "eu-west-3" "eu-central-1" "eu-north-1" "ap-southeast-1" "ap-southeast-2" "ap-northeast-1" "ap-northeast-2" "ap-south-1" "sa-east-1")
-  REGION="${REGIONS[0]}"
-  echo "  → Deploying to ALL ${#REGIONS[@]} regions"
+  echo "  → EventBridge rules will deploy to ALL ${#REGIONS[@]} regions in member accounts"
 else
-  REGION="${INPUT_REGION:-$REGION}"
   REGIONS=("$REGION")
+  echo "  → EventBridge rules will deploy to $REGION only in member accounts"
 fi
 
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
 echo ""
 echo "  Account:  $ACCOUNT_ID (delegated admin)"
-echo "  Region:   $REGION (primary)"
+echo "  Central:  $REGION (main stack, Lambda, Agent)"
 echo "  Org:      $ORG_ID"
 echo "  OU:       $OU_ID"
-echo "  Regions:  ${#REGIONS[@]} total"
+echo "  Member regions: ${#REGIONS[@]} (EventBridge rules)"
 echo ""
 
 # ═══════════════════════════════════════════════════════════════════
