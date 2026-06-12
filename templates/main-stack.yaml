@@ -49,6 +49,8 @@ Resources:
         detail:
           state:
             - FAILED
+            - ABORTED
+            - EXPIRED
       Targets:
         - Id: BackupFailureBridge
           Arn: !GetAtt BackupFailureBridge.Arn

@@ -230,6 +230,7 @@ if aws cloudformation describe-stack-set \
     --stack-set-name "$STACKSET_NAME" \
     --template-body "file://$SCRIPT_DIR/templates/member-forwarder.yaml" \
     --parameters "ParameterKey=DelegatedAdminAccountId,ParameterValue=$ACCOUNT_ID" \
+                 "ParameterKey=CentralRegion,ParameterValue=$REGION" \
     --capabilities CAPABILITY_NAMED_IAM \
     --operation-preferences "FailureTolerancePercentage=100,MaxConcurrentPercentage=100" \
     --call-as DELEGATED_ADMIN \
@@ -256,6 +257,7 @@ else
     --stack-set-name "$STACKSET_NAME" \
     --template-body "file://$SCRIPT_DIR/templates/member-forwarder.yaml" \
     --parameters "ParameterKey=DelegatedAdminAccountId,ParameterValue=$ACCOUNT_ID" \
+                 "ParameterKey=CentralRegion,ParameterValue=$REGION" \
     --permission-model SERVICE_MANAGED \
     --auto-deployment "Enabled=true,RetainStacksOnAccountRemoval=false" \
     --capabilities CAPABILITY_NAMED_IAM \

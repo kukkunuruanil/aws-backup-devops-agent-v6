@@ -3,12 +3,17 @@ Description: >
   Member account resources for AWS Backup DevOps Agent.
   Deployed via StackSet from the delegated admin account to ALL regions.
   EventBridge forwarding rule deploys in every region.
+  All events forward to delegated admin's us-east-1 bus (where Lambda lives).
   IAM roles deploy only in us-east-1 (IAM is global).
 
 Parameters:
   DelegatedAdminAccountId:
     Type: String
     Description: Account ID of the delegated admin (where Lambda and Agent live)
+  CentralRegion:
+    Type: String
+    Default: us-east-1
+    Description: Region where the main stack (Lambda + EventBus policy) is deployed
 
 Conditions:
   IsNotDelegatedAdmin: !Not [!Equals [!Ref "AWS::AccountId", !Ref DelegatedAdminAccountId]]
@@ -22,8 +27,8 @@ Conditions:
 Resources:
   # ─────────────────────────────────────────────────────────────────
   # EventBridge rule - deploys in EVERY region (regional resource)
-  # Forwards failed backup/copy events to delegated admin's event bus
-  # in the SAME region for processing by DevOps Agent.
+  # ALL regions forward to the CENTRAL region (us-east-1) in the
+  # delegated admin where the Lambda + event bus policy lives.
   # ─────────────────────────────────────────────────────────────────
   ForwardingRule:
     Type: AWS::Events::Rule
@@ -45,7 +50,7 @@ Resources:
             - EXPIRED
       Targets:
         - Id: DelegatedAdminBus
-          Arn: !Sub arn:aws:events:${AWS::Region}:${DelegatedAdminAccountId}:event-bus/default
+          Arn: !Sub arn:aws:events:${CentralRegion}:${DelegatedAdminAccountId}:event-bus/default
           RoleArn: !Sub arn:aws:iam::${AWS::AccountId}:role/BackupEventForwardingRole
 
   # ─────────────────────────────────────────────────────────────────
@@ -72,7 +77,7 @@ Resources:
             Statement:
               - Effect: Allow
                 Action: events:PutEvents
-                Resource: !Sub arn:aws:events:*:${DelegatedAdminAccountId}:event-bus/default
+                Resource: !Sub arn:aws:events:${CentralRegion}:${DelegatedAdminAccountId}:event-bus/default
 
   # Investigation role - allows DevOps Agent to assume into member accounts
   # for root cause analysis via CloudTrail, Backup, KMS, IAM, Config, EC2, RDS
